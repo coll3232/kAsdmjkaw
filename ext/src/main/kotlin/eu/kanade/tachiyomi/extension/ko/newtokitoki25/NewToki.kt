@@ -322,8 +322,11 @@ class NewToki : HttpSource(), ConfigurableSource {
         SecureRandom().nextBytes(nonceBytes)
         val nonce = Base64.encodeToString(nonceBytes, Base64.NO_WRAP or Base64.NO_PADDING or Base64.URL_SAFE)
 
+        // Use the exact User-Agent from the response to match the cf_clearance cookie
+        val actualUserAgent = response.request.header("User-Agent") ?: userAgent
+
         // 4. Compute HMAC-SHA256 proof signature
-        val message = "$imagesToken.$nonce.$userAgent"
+        val message = "$imagesToken.$nonce.$actualUserAgent"
         val mac = Mac.getInstance("HmacSHA256")
         val secretKey = SecretKeySpec(nvCookie.toByteArray(Charsets.UTF_8), "HmacSHA256")
         mac.init(secretKey)
@@ -343,7 +346,7 @@ class NewToki : HttpSource(), ConfigurableSource {
             .url("$apiBaseUrl/api/webtoon-images")
             .post(jsonPayload.toRequestBody("application/json".toMediaType()))
             .header("x-images-client", "viewer-v1")
-            .header("User-Agent", userAgent)
+            .header("User-Agent", actualUserAgent)
             .header("Referer", refererUrl)
             .header("Origin", apiBaseUrl)
             .header("Accept", "*/*")
