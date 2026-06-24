@@ -342,11 +342,20 @@ class NewToki : HttpSource(), ConfigurableSource {
             put("proof", proof)
         }.toString()
 
+        // Combine CookieJar cookies (e.g. cf_clearance) with the nv cookie manually to ensure none are missed
+        val allCookiesList = network.client.cookieJar.loadForRequest(response.request.url)
+        var combinedCookies = allCookiesList.joinToString("; ") { "${it.name}=${it.value}" }
+        if (!combinedCookies.contains("nv=")) {
+            combinedCookies += (if (combinedCookies.isNotEmpty()) "; " else "") + "nv=$nvCookie"
+        }
+
         val imagesRequest = Request.Builder()
             .url("$apiBaseUrl/api/webtoon-images")
             .post(jsonPayload.toRequestBody("application/json".toMediaType()))
+            .headers(headers) // Includes Accept-Language and default User-Agent
             .header("x-images-client", "viewer-v1")
-            .header("User-Agent", actualUserAgent)
+            .header("User-Agent", actualUserAgent) // Overrides default with actual Webview UA
+            .header("Cookie", combinedCookies)
             .header("Referer", refererUrl)
             .header("Origin", apiBaseUrl)
             .header("Accept", "*/*")
