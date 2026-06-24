@@ -1,0 +1,387 @@
+package eu.kanade.tachiyomi.extension.ko.newtokitoki25
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
+import android.util.Base64
+import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.online.HttpSource
+import okhttp3.Headers
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.json.JSONObject
+import org.jsoup.Jsoup
+import java.io.ByteArrayOutputStream
+import java.net.URLEncoder
+import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+
+class NewToki : HttpSource() {
+
+    override val name = "NewToki (toki25)"
+
+    override val baseUrl = "https://toki25.com"
+
+    override val lang = "ko"
+
+    override val supportsLatest = true
+
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    override fun headersBuilder(): Headers.Builder {
+        return Headers.Builder()
+            .add("User-Agent", userAgent)
+            .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8")
+            .add("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
+    }
+
+    override val client: OkHttpClient = network.client.newBuilder()
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val urlString = request.url.toString()
+            if (urlString.contains("#seed=")) {
+                val seed = urlString.substringAfter("#seed=")
+                val cleanUrl = urlString.substringBefore("#seed=")
+                val newRequest = request.newBuilder()
+                    .url(cleanUrl)
+                    .build()
+                val response = chain.proceed(newRequest)
+                if (response.isSuccessful && seed.isNotEmpty()) {
+                    val rawBytes = response.body!!.bytes()
+                    val descrambled = descrambleImage(rawBytes, seed)
+                    response.newBuilder()
+                        .body(descrambled.toResponseBody("image/jpeg".toMediaType()))
+                        .build()
+                } else {
+                    response
+                }
+            } else {
+                chain.proceed(request)
+            }
+        }
+        .build()
+
+    // ---------------- Popular Manga ----------------
+    override fun popularMangaRequest(page: Int): Request {
+        return GET("$baseUrl/rank?kind=webtoon", headers)
+    }
+
+    override fun popularMangaParse(response: Response): MangasPage {
+        val document = Jsoup.parse(response.body!!.string())
+        return parseMangaList(document)
+    }
+
+    // ---------------- Latest Updates ----------------
+    override fun latestUpdatesRequest(page: Int): Request {
+        return GET("$baseUrl/ing?page=$page", headers)
+    }
+
+    override fun latestUpdatesParse(response: Response): MangasPage {
+        val document = Jsoup.parse(response.body!!.string())
+        return parseMangaList(document)
+    }
+
+    // ---------------- Search Manga ----------------
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        return GET("$baseUrl/search?q=$encodedQuery&field=title&match=contains&page=$page", headers)
+    }
+
+    override fun searchMangaParse(response: Response): MangasPage {
+        val document = Jsoup.parse(response.body!!.string())
+        return parseMangaList(document)
+    }
+
+    // ---------------- Common Manga List Parser ----------------
+    private fun parseMangaList(document: org.jsoup.nodes.Document): MangasPage {
+        val mangas = mutableListOf<SManga>()
+        val links = document.select("a[href*=/webtoon/]")
+        val seenIds = mutableSetOf<String>()
+
+        for (link in links) {
+            val href = link.attr("href")
+            val cleanHref = href.substringBefore("?").substringBefore("#")
+            val segments = cleanHref.split("/").filter { it.isNotEmpty() }
+            if (segments.size != 2 || segments[0] != "webtoon") continue
+
+            val id = segments[1]
+            if (seenIds.contains(id)) continue
+            seenIds.add(id)
+
+            val img = link.selectFirst("img") ?: continue
+            val title = img.attr("alt").takeIf { it.isNotEmpty() } ?: link.text()
+            val coverUrl = img.attr("src")
+
+            val manga = SManga.create().apply {
+                url = cleanHref
+                this.title = title
+                thumbnail_url = coverUrl
+            }
+            mangas.add(manga)
+        }
+        // If results are found, assume there might be a next page (can be refined)
+        return MangasPage(mangas, mangas.isNotEmpty())
+    }
+
+    // ---------------- Manga Details ----------------
+    override fun mangaDetailsParse(response: Response): SManga {
+        val document = Jsoup.parse(response.body!!.string())
+        return SManga.create().apply {
+            title = document.selectFirst("h1.hero-v2-title")?.text() ?: ""
+            author = document.select("div.hero-v2-author a").joinToString(", ") { it.text() }
+            description = document.selectFirst("p.hero-v2-desc")?.text() ?: ""
+            genre = document.select("div.hero-v2-tags a").joinToString(", ") { it.text().replace("#", "") }
+            
+            val img = document.selectFirst("div.hero-v2-thumb img")
+            thumbnail_url = img?.attr("src")
+            
+            val statusText = document.select(".pill-status").text()
+            status = when {
+                statusText.contains("연재중") -> SManga.ONGOING
+                statusText.contains("완결") -> SManga.COMPLETED
+                else -> SManga.UNKNOWN
+            }
+        }
+    }
+
+    // ---------------- Chapter List ----------------
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val document = Jsoup.parse(response.body!!.string())
+        val chapters = mutableListOf<SChapter>()
+        val epRows = document.select("ul.ep-list-v2 li.ep-row-v2")
+
+        for (row in epRows) {
+            val link = row.selectFirst("a.ep-row-v2-link") ?: continue
+            val href = link.attr("href")
+            val titleElement = row.selectFirst("div.ep-row-v2-title strong") ?: continue
+            val title = titleElement.text()
+
+            val chapter = SChapter.create().apply {
+                url = href
+                name = title
+                val dateText = row.selectFirst("span.ep-row-v2-date")?.text()
+                if (dateText != null) {
+                    date_upload = parseChapterDate(dateText)
+                }
+            }
+            chapters.add(chapter)
+        }
+        return chapters
+    }
+
+    private fun parseChapterDate(dateStr: String): Long {
+        return try {
+            val sdf = java.text.SimpleDateFormat("yy.MM.dd", java.util.Locale.US)
+            sdf.parse(dateStr.trim())?.time ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    // ---------------- Page List (Images API Resolution) ----------------
+    override fun pageListParse(response: Response): List<Page> {
+        val htmlContent = response.body!!.string()
+        val refererUrl = response.request.url.toString()
+
+        // 1. Extract Next.js payload tokens
+        val imagesToken = regexExtract(htmlContent, "\"imagesToken\"\\s*:\\s*\"([^\"]+)\"")
+            ?: throw Exception("Failed to parse imagesToken from page")
+        val workId = regexExtract(htmlContent, "\"sourceWorkId\"\\s*:\\s*\"([^\"]+)\"")
+            ?: throw Exception("Failed to parse workId from page")
+        val episodeId = regexExtract(htmlContent, "\"episodeId\"\\s*:\\s*\"([^\"]+)\"")
+            ?: throw Exception("Failed to parse episodeId from page")
+
+        // 2. Fetch nv session cookie if missing or expired
+        var nvCookie = ""
+        val cookies = network.client.cookieJar.loadForRequest(response.request.url)
+        for (cookie in cookies) {
+            if (cookie.name == "nv" && cookie.value.length >= 40) {
+                nvCookie = cookie.value
+            }
+        }
+
+        if (nvCookie.isEmpty()) {
+            val issueRequest = Request.Builder()
+                .url("$baseUrl/api/nv-issue")
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .headers(headers)
+                .build()
+            val issueResponse = network.client.newCall(issueRequest).execute()
+            val setCookies = issueResponse.headers("Set-Cookie")
+            for (c in setCookies) {
+                if (c.startsWith("nv=")) {
+                    nvCookie = c.substringAfter("nv=").substringBefore(";")
+                    break
+                }
+            }
+        }
+
+        if (nvCookie.isEmpty()) {
+            throw Exception("Failed to acquire nv validation session cookie")
+        }
+
+        // 3. Generate 24-byte random nonce and Base64Url encode it
+        val nonceBytes = ByteArray(24)
+        SecureRandom().nextBytes(nonceBytes)
+        val nonce = Base64.encodeToString(nonceBytes, Base64.NO_WRAP or Base64.NO_PADDING or Base64.URL_SAFE)
+
+        // 4. Compute HMAC-SHA256 proof signature
+        val message = "$imagesToken.$nonce.$userAgent"
+        val mac = Mac.getInstance("HmacSHA256")
+        val secretKey = SecretKeySpec(nvCookie.toByteArray(Charsets.UTF_8), "HmacSHA256")
+        mac.init(secretKey)
+        val signatureBytes = mac.doFinal(message.toByteArray(Charsets.UTF_8))
+        val proof = Base64.encodeToString(signatureBytes, Base64.NO_WRAP or Base64.NO_PADDING or Base64.URL_SAFE)
+
+        // 5. Send POST request to /api/webtoon-images
+        val jsonPayload = JSONObject().apply {
+            put("workId", workId)
+            put("episodeId", episodeId)
+            put("token", imagesToken)
+            put("nonce", nonce)
+            put("proof", proof)
+        }.toString()
+
+        val imagesRequest = Request.Builder()
+            .url("$baseUrl/api/webtoon-images")
+            .post(jsonPayload.toRequestBody("application/json".toMediaType()))
+            .header("x-images-client", "viewer-v1")
+            .header("User-Agent", userAgent)
+            .header("Cookie", "nv=$nvCookie")
+            .header("Referer", refererUrl)
+            .build()
+
+        val imagesResponse = network.client.newCall(imagesRequest).execute()
+        if (!imagesResponse.isSuccessful) {
+            throw Exception("API webtoon-images request failed: Code ${imagesResponse.code}")
+        }
+
+        val jsonResponse = JSONObject(imagesResponse.body!!.string())
+        if (!jsonResponse.optBoolean("ok", false)) {
+            throw Exception("API webtoon-images error: " + jsonResponse.optString("error", "Unknown error"))
+        }
+
+        val jsonImages = jsonResponse.getJSONArray("images")
+        val pages = mutableListOf<Page>()
+        for (i in 0 until jsonImages.length()) {
+            val imgObj = jsonImages.getJSONObject(i)
+            val pageIndex = imgObj.getInt("page") - 1
+            val shuffledSrc = imgObj.getString("shuffledSrc")
+            val shuffleSeed = imgObj.optString("shuffleSeed", "")
+            
+            // Tachiyomi expects Page url parameter. We append the seed as a URL fragment hash.
+            pages.add(Page(pageIndex, "", "$shuffledSrc#seed=$shuffleSeed"))
+        }
+        return pages
+    }
+
+    private fun regexExtract(html: String, pattern: String): String? {
+        val matcher = java.util.regex.Pattern.compile(pattern).matcher(html)
+        return if (matcher.find()) matcher.group(1) else null
+    }
+
+    // ---------------- Unscrambling / Image Processing ----------------
+    private fun descrambleImage(imageBytes: ByteArray, seedStr: String): ByteArray {
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return imageBytes
+        val width = bitmap.width
+        val height = bitmap.height
+
+        val resultBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(resultBitmap)
+        val paint = Paint()
+
+        // 1. Parse seed to a ULong and compute permutation array
+        val seedVal = seedStr.toLongOrNull() ?: return imageBytes
+        val u = getPermutation(seedVal.toULong())
+
+        // 2. Draw tiles (5x5 grid)
+        val grid = 5
+        val blockWidth = width / grid
+        val blockHeight = height / grid
+
+        for (e in 0 until 25) {
+            val srcPos = getTileRect(width, height, grid, u[e])
+            val destPos = getTileRect(width, height, grid, e)
+            if (srcPos != null && destPos != null) {
+                canvas.drawBitmap(bitmap, srcPos, destPos, paint)
+            }
+        }
+
+        // 3. Draw remainder strips (25 = right, 26 = bottom)
+        for (e in 25..26) {
+            val pos = getTileRect(width, height, grid, e)
+            if (pos != null) {
+                canvas.drawBitmap(bitmap, pos, pos, paint)
+            }
+        }
+
+        bitmap.recycle()
+
+        // 4. Compress to output byte array
+        val outputStream = ByteArrayOutputStream()
+        resultBitmap.compress(Bitmap.CompressFormat.JPEG, 92, outputStream)
+        resultBitmap.recycle()
+        
+        return outputStream.toByteArray()
+    }
+
+    private fun getTileRect(width: Int, height: Int, grid: Int, n: Int): Rect? {
+        val r = grid * grid
+        if (n < r) {
+            val blockWidth = width / grid
+            val blockHeight = height / grid
+            val left = (n % grid) * blockWidth
+            val top = (n / grid) * blockHeight
+            return Rect(left, top, left + blockWidth, top + blockHeight)
+        }
+        if (n == r) { // 25: right remainder
+            val remainder = width % grid
+            if (remainder == 0) return null
+            return Rect(width - remainder, 0, width, height)
+        }
+        // 26: bottom remainder
+        val remainder = height % grid
+        if (remainder == 0) return null
+        return Rect(0, height - remainder, width - (width % grid), height)
+    }
+
+    private fun getPermutation(seed: ULong): IntArray {
+        var t = seed
+        val u = IntArray(25) { it }
+        
+        // Custom 64-bit Xorshift PRNG matching JavaScript logic
+        val n = { e: Int ->
+            t = t xor (t shr 12)
+            t = t xor (t shl 25)
+            t = t xor (t shr 27)
+            val shifted = t shr 32
+            (shifted % e.toULong()).toInt()
+        }
+        
+        for (e in 0 until 25) {
+            val target = n(25)
+            val temp = u[e]
+            u[e] = u[target]
+            u[target] = temp
+        }
+        
+        return u
+    }
+
+    override fun imageUrlParse(response: Response): String {
+        throw UnsupportedOperationException("Not used")
+    }
+}
