@@ -58,10 +58,7 @@ def main():
     shutil.copy2(source_apk_path, dest_apk_path)
 
     # Compute SHA-256
-    apk_hash = get_sha256(dest_apk_path)
-    print(f"SHA-256 Hash: {apk_hash}")
-
-    apk_url = f"https://raw.githubusercontent.com/coll3232/kAsdmjkaw/gh-pages/{dest_apk_name}"
+    apk_url = f"https://coll3232.github.io/kAsdmjkaw/{dest_apk_name}"
 
     # Generate repository index
     index_data = [
