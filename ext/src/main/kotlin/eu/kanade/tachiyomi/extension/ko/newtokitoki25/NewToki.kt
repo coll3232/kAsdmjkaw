@@ -346,12 +346,23 @@ class NewToki : HttpSource(), ConfigurableSource {
             .header("User-Agent", userAgent)
             .header("Cookie", "nv=$nvCookie")
             .header("Referer", refererUrl)
+            .header("Origin", apiBaseUrl)
+            .header("Accept", "*/*")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-origin")
             .build()
 
         val imagesResponse = network.client.newCall(imagesRequest).execute()
         if (!imagesResponse.isSuccessful) {
             val errBody = imagesResponse.body?.string() ?: ""
-            throw Exception("API webtoon-images request failed: Code ${imagesResponse.code} - Body: $errBody")
+            val titleMatch = Regex("<title>(.*?)</title>").find(errBody)
+            val shortBody = if (titleMatch != null) {
+                "HTML Title: ${titleMatch.groupValues[1]}"
+            } else {
+                errBody.take(150)
+            }
+            throw Exception("API 403 Blocked - $shortBody")
         }
 
         val jsonResponse = JSONObject(imagesResponse.body!!.string())
