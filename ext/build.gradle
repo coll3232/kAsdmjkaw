@@ -34,7 +34,7 @@ android {
 
 dependencies {
     // Tachiyomi source API (contains HttpSource and other core definitions)
-    compileOnly "eu.kanade.tachiyomi:source-api:1.1"
+    compileOnly "org.tachiyomi:source-api:1.1"
     
     // Provided by host app
     compileOnly "org.jetbrains.kotlin:kotlin-stdlib:1.9.22"
@@ -42,5 +42,5 @@ dependencies {
     compileOnly "com.squareup.okhttp3:okhttp:4.12.0"
     compileOnly "org.jsoup:jsoup:1.17.2"
     compileOnly "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2"
-    compileOnly "rx:rxjava:1.3.8"
+    compileOnly "io.reactivex:rxjava:1.3.8"
 }
