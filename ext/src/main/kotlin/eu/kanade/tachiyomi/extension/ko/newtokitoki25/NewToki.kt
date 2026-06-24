@@ -270,12 +270,12 @@ class NewToki : HttpSource(), ConfigurableSource {
         val htmlContent = response.body!!.string()
         val refererUrl = response.request.url.toString()
 
-        // 1. Extract Next.js payload tokens
-        val imagesToken = regexExtract(htmlContent, "\"imagesToken\"\\s*:\\s*\"([^\"]+)\"")
+        // 1. Extract Next.js payload tokens (lenient regex for formatting changes)
+        val imagesToken = regexExtract(htmlContent, "['\"]?imagesToken['\"]?\\s*[:=]\\s*['\"]([^'\"]+)['\"]")
             ?: throw Exception("Failed to parse imagesToken from page")
-        val workId = regexExtract(htmlContent, "\"sourceWorkId\"\\s*:\\s*\"([^\"]+)\"")
+        val workId = regexExtract(htmlContent, "['\"]?sourceWorkId['\"]?\\s*[:=]\\s*['\"]?([^'\",\\s}]+)['\"]?")
             ?: throw Exception("Failed to parse workId from page")
-        val episodeId = regexExtract(htmlContent, "\"episodeId\"\\s*:\\s*\"([^\"]+)\"")
+        val episodeId = regexExtract(htmlContent, "['\"]?episodeId['\"]?\\s*[:=]\\s*['\"]?([^'\",\\s}]+)['\"]?")
             ?: throw Exception("Failed to parse episodeId from page")
 
         // 2. Fetch nv session cookie if missing or expired
