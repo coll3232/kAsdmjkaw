@@ -61,17 +61,28 @@ def main():
     apk_hash = get_sha256(dest_apk_path)
     print(f"SHA-256 Hash: {apk_hash}")
 
+    apk_url = f"https://raw.githubusercontent.com/coll3232/kAsdmjkaw/gh-pages/{dest_apk_name}"
+
     # Generate repository index
     index_data = [
         {
             "name": "toon Ki",
             "pkg": pkg_name,
-            "apk": dest_apk_name,
+            "apk": apk_url,
             "lang": "ko",
             "code": version_code,
             "version": version_name,
             "nsfw": 1,
-            "sha256": apk_hash
+            "hasReadme": 0,
+            "hasChangelog": 0,
+            "sources": [
+                {
+                    "name": "toon Ki",
+                    "id": "1",
+                    "lang": "ko",
+                    "baseUrl": "https://toki25.com"
+                }
+            ]
         }
     ]
 
