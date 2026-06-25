@@ -116,10 +116,29 @@ class NewToki : HttpSource(), ConfigurableSource {
             val currentHostName = newRequest.url.host
             val nextHost = guessNextHost(currentHostName)
             if (nextHost != null) {
-                val newBaseUrl = "https://$nextHost"
-                preferences.edit().putString(baseUrlPrefKey, newBaseUrl).apply()
+                try {
+                    val newBaseUrl = "https://$nextHost"
+                    preferences.edit().putString(baseUrlPrefKey, newBaseUrl).apply()
+                    
+                    val retriedUrl = newRequest.url.newBuilder().host(nextHost).build()
+                    val retriedRequest = newRequest.newBuilder().url(retriedUrl).build()
+                    response = chain.proceed(retriedRequest)
+                } catch (e2: java.io.IOException) {
+                    val defaultHost = defaultBaseUrl.toHttpUrl().host
+                    if (nextHost != defaultHost) {
+                        preferences.edit().putString(baseUrlPrefKey, defaultBaseUrl).apply()
+                        val fallbackUrl = newRequest.url.newBuilder().host(defaultHost).build()
+                        val fallbackRequest = newRequest.newBuilder().url(fallbackUrl).build()
+                        response = chain.proceed(fallbackRequest)
+                    } else {
+                        throw e2
+                    }
+                }
+            } else if (currentHostName != defaultBaseUrl.toHttpUrl().host) {
+                val defaultHost = defaultBaseUrl.toHttpUrl().host
+                preferences.edit().putString(baseUrlPrefKey, defaultBaseUrl).apply()
                 
-                val retriedUrl = newRequest.url.newBuilder().host(nextHost).build()
+                val retriedUrl = newRequest.url.newBuilder().host(defaultHost).build()
                 val retriedRequest = newRequest.newBuilder().url(retriedUrl).build()
                 response = chain.proceed(retriedRequest)
             } else {
@@ -293,11 +312,13 @@ class NewToki : HttpSource(), ConfigurableSource {
         android.util.Log.d("NewTokiDebug", "pageListParse start: ${response.request.url}")
         try {
             // Create a clean OkHttpClient to bypass the app-wide UserAgentInterceptor and CloudflareInterceptor
-            val cleanClient = OkHttpClient.Builder()
+            val cleanClient = network.client.newBuilder()
                 .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-                .followRedirects(true)
-                .followSslRedirects(true)
+                .apply {
+                    interceptors().clear()
+                    networkInterceptors().clear()
+                }
                 .build()
 
             val htmlContent = response.body!!.string()
