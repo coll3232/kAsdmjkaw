@@ -73,7 +73,11 @@ class NewToki : HttpSource(), ConfigurableSource {
                 }
             }
         } catch (_: Throwable) {
-            "Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            try {
+                android.webkit.WebSettings.getDefaultUserAgent(Injekt.get<Application>())
+            } catch (_: Throwable) {
+                "Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            }
         }
     }
 
